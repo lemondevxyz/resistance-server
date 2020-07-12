@@ -1,0 +1,8 @@
+discord:
+  client_id: 716660117977956403
+  client_secret: zsmD1QPpwKfcRCmogJ2vvAHNqVw-tu_y
+domain: http://localhost:8080
+lobby:
+  idlen: 4
+  maxclient: 10
+session_secret: ylML2g6xWkKgEZr6e7hvy6R5v6cg77nl
