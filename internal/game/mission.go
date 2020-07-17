@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/rand"
 	"time"
 
 	"github.com/toms1441/resistance-server/internal/conn"
@@ -34,18 +33,17 @@ func (g *Game) runMission(ri, mi int) (b bool) {
 	g.log.Debug("g.runMission(%d, %d):", ri, mi)
 
 	// if the captain is invalid then set a new captain
-	captain := g.GetCaptain()
-	if !captain.IsValid() {
-		g.captain = rand.Intn(len(g.Players))
+	captain, ok := g.Players[g.captain]
+	if !ok {
 	}
 
 	g.Broadcast(conn.MessageSend{
 		Group: "game",
 		Name:  "choose",
-		Body:  captain.ID,
+		Body:  g.captain,
 	})
 
-	g.log.Debug("captain = @%s#%s", captain.User.Username, captain.User.Discriminator)
+	g.log.Debug("captain = @%s#%s", captain.GetClient().Username, captain.GetClient().Discriminator)
 
 	g.Broadcast(conn.MessageSend{
 		Group: "game",
@@ -56,19 +54,19 @@ func (g *Game) runMission(ri, mi int) (b bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute*1)
 	g.startChoosingPhase(cancel, ri, mi)
 	<-ctx.Done()
-	captain.Conn.RemoveCommandsByGroup("game")
+	captain.RemoveCommandsByGroup("game")
 
 	// names of the assignees
 	assignees := []string{}
 	for _, id := range g.Rounds[ri].Missions[mi].Assignees {
 		// because they're stored in id form we have to loop
-		p := g.GetPlayer(id)
-		if !p.IsValid() {
+		p, ok := g.Players[id]
+		if !ok {
 			g.log.Debug("!p.IsValid: %s", id)
 			continue
 		}
 
-		assignees = append(assignees, fmt.Sprintf("@%s#%s", p.User.Username, p.User.Discriminator))
+		assignees = append(assignees, fmt.Sprintf("@%s#%s", p.GetClient().Username, p.GetClient().Discriminator))
 	}
 
 	g.log.Debug("assignees = %v", assignees)
@@ -97,13 +95,7 @@ func (g *Game) runMission(ri, mi int) (b bool) {
 		// return true as to proceed to roundVote
 		b = true
 	} else {
-		// else set the new captain as the next player in line
-		i := g.GetPlayerIndex(captain.ID) + 1
-		if len(g.Players) <= i {
-			i = 0
-		}
-
-		g.SetCaptain(i)
+		g.SetCaptain()
 	}
 
 	return
@@ -113,41 +105,43 @@ func (g *Game) runMission(ri, mi int) (b bool) {
 // This function is called whenever the captain is set. which is whenever there is a mission avaliable.
 func (g *Game) startChoosingPhase(cancel context.CancelFunc, ri, mi int) {
 	// We don't need to validate because we already validated above
-	captain := g.GetCaptain()
-	captain.Conn.AddCommand("game", conn.MessageStruct{
-		"choose": func(log logger.Logger, body []byte) error {
-			var arr = []string{}
+	captain, ok := g.Players[g.captain]
+	if ok {
+		captain.Conn.AddCommand("game", conn.MessageStruct{
+			"choose": func(log logger.Logger, body []byte) error {
+				var arr = []string{}
 
-			err := json.Unmarshal(body, &arr)
-			if err != nil {
-				return fmt.Errorf("json.Unmarshal: %v", err)
-			}
-
-			var want = int(g.Rounds[ri].Assignees)
-			var have = len(arr)
-
-			if have != want {
-				return fmt.Errorf("%w - want: %d, have: %d", ErrMinAssignees, want, have)
-			}
-
-			var ids []string
-			for _, v := range arr {
-				p := g.GetPlayer(v)
-				// if one of the players is not valid then cancel the whole function
-				if !p.IsValid() {
-					return ErrInvalidPlayer
+				err := json.Unmarshal(body, &arr)
+				if err != nil {
+					return fmt.Errorf("json.Unmarshal: %v", err)
 				}
-				// else assign the real player to the array
-				ids = append(ids, v)
-			}
 
-			g.Rounds[ri].Missions[mi].Assignees = ids
+				var want = int(g.Rounds[ri].Assignees)
+				var have = len(arr)
 
-			cancel()
+				if have != want {
+					return fmt.Errorf("%w - want: %d, have: %d", ErrMinAssignees, want, have)
+				}
 
-			return nil
-		},
-	})
+				var ids []string
+				for _, v := range arr {
+					_, ok := g.Players[v]
+					if ok {
+						// else assign the real player to the array
+						ids = append(ids, v)
+					} else {
+						return ErrInvalidPlayer
+					}
+				}
+
+				g.Rounds[ri].Missions[mi].Assignees = ids
+
+				cancel()
+
+				return nil
+			},
+		})
+	}
 }
 
 // startVotingPhase is called whenever the mission assignees have been set. It sets a command 'game.vote' to get all players' votes
@@ -164,9 +158,9 @@ func (g *Game) startVotingPhase(cancel context.CancelFunc, ri, mi int) {
 					}
 
 					if accept {
-						g.Rounds[ri].Missions[mi].Accept = append(g.Rounds[ri].Missions[mi].Accept, v.ID)
+						g.Rounds[ri].Missions[mi].Accept = append(g.Rounds[ri].Missions[mi].Accept, v.GetClient().ID)
 					} else {
-						g.Rounds[ri].Missions[mi].Decline = append(g.Rounds[ri].Missions[mi].Decline, v.ID)
+						g.Rounds[ri].Missions[mi].Decline = append(g.Rounds[ri].Missions[mi].Decline, v.GetClient().ID)
 					}
 
 					mission := g.Rounds[ri].Missions[mi]

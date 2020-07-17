@@ -3,6 +3,7 @@ package conn
 import (
 	"encoding/json"
 
+	"github.com/toms1441/resistance-server/internal/client"
 	"github.com/toms1441/resistance-server/internal/logger"
 )
 
@@ -15,15 +16,21 @@ type Conn interface {
 	RemoveCommandsByGroup(group string)
 	// RemoveCommandsByNames removes all commands by matching group and name.
 	RemoveCommandsByNames(group string, name ...string)
-
 	// WriteMessage writes a message to the connection.
 	WriteMessage(ms MessageSend) error
 	// WriteBytes writes bytes to the connection.
 	WriteBytes(body []byte)
+
 	// GetDone returns a channel that gets set, if the connection has been destroyed.
 	GetDone() chan bool
 	// Destroy destroys the connection.
 	Destroy()
+
+	// GetClient returns the client
+	GetClient() client.Client
+
+	// SetLogger sets the logger for this connection
+	SetLogger(logger.Logger)
 }
 
 // MessageStruct is a struct to store commands.

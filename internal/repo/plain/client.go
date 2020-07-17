@@ -74,7 +74,7 @@ func (r *clientRepository) Update(id string, c client.Client) error {
 	r.mx.Lock()
 	defer r.mx.Unlock()
 
-	c, ok := r.db[id]
+	_, ok := r.db[id]
 	if !ok {
 		return repo.ErrClient404
 	}

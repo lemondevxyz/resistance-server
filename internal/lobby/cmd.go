@@ -11,12 +11,13 @@ import (
 	"github.com/toms1441/resistance-server/internal/logger"
 )
 
-func (l *Lobby) addCommands(c client.Client) {
-	if !c.IsValid() {
+func (l *Lobby) addCommands(c conn.Conn) {
+	cl := c.GetClient()
+	if !cl.IsValid() {
 		return
 	}
 
-	c.Conn.RemoveCommandsByGroup("lobby")
+	c.RemoveCommandsByGroup("lobby")
 
 	strct := conn.MessageStruct{
 		"leave": func(log logger.Logger, bytes []byte) error {
@@ -24,26 +25,27 @@ func (l *Lobby) addCommands(c client.Client) {
 		},
 
 		"get": func(log logger.Logger, bytes []byte) error {
-			return c.Conn.WriteMessage(l.MessageSend())
+			return c.WriteMessage(l.MessageSend())
 		},
 	}
 
-	if len(l.Clients) == 0 {
+	if len(l.conns) == 0 {
 		return
 	}
 
-	if l.Clients[0] == c {
+	tempcl, ok := l.conns[cl.ID]
+	if ok && tempcl == c {
 		strct["kick"] = func(log logger.Logger, bytes []byte) error {
 			target := client.Client{}
 			json.Unmarshal(bytes, &target)
 			if len(target.ID) > 0 {
 				// if the target is a valid client
-				target = l.GetClient(target.ID)
-				if !target.IsValid() {
-					return fmt.Errorf("!target.IsValid")
+				targetconn, ok := l.conns[target.ID]
+				if !ok {
+					return fmt.Errorf("invalid client")
 				}
 
-				l.Leave(target)
+				l.Leave(targetconn)
 			}
 
 			return nil
@@ -64,10 +66,11 @@ func (l *Lobby) addCommands(c client.Client) {
 			lc.Suffix = l.log.GetSuffix()
 			lc.Debug = true
 
-			g, err := game.NewGame(logger.NewLogger(lc), l.Clients, l.Type.Common(), gameoption)
+			g, err := game.NewGame(l.conns, l.Type.Common(), gameoption)
 			if err != nil {
 				return fmt.Errorf("game.NewGame: %w", err)
 			}
+			g.SetLogger(logger.NewLogger(lc))
 
 			go func(g *game.Game) {
 				s := make(chan game.Status)
@@ -79,6 +82,6 @@ func (l *Lobby) addCommands(c client.Client) {
 		}
 	}
 
-	c.Conn.AddCommand("lobby", strct)
+	c.AddCommand("lobby", strct)
 
 }

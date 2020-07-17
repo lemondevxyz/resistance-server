@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/fatih/color"
 	"github.com/gin-gonic/gin"
 	"github.com/gobwas/ws"
 	"github.com/toms1441/resistance-server/internal/client"
@@ -21,12 +22,13 @@ type WebsocketConfig struct {
 	ClientService client.Service
 	Log           logger.Logger
 	GetUser       func(c *gin.Context) (discord.User, error)
-	cl            client.Client
 }
 
 type context struct {
 	*gin.Context
 	WebsocketConfig
+	l  *lobby.Lobby
+	cl conn.Conn
 }
 
 // marshalLobbies returns []byte of all the lobbies
@@ -57,13 +59,8 @@ func (c context) marshalLobbies() ([]byte, error) {
 // sendLobbies sends marshalLobbies for every client
 func (c context) sendLobbies() {
 	log := c.Log
-	cserv := c.ClientService
 
-	cls, err := cserv.GetAllClients()
-	if err != nil {
-		log.Danger("client.GetAllClient: %v", err)
-		return
-	}
+	cls := conn.AllConn()
 
 	body, err := c.marshalLobbies()
 	if err != nil {
@@ -72,10 +69,8 @@ func (c context) sendLobbies() {
 	}
 
 	for _, v := range cls {
-		if len(v.LobbyID) == 0 {
-			if v.Conn != nil {
-				v.Conn.WriteBytes(body)
-			}
+		if v != nil {
+			v.WriteBytes(body)
 		}
 	}
 
@@ -89,8 +84,9 @@ func (c context) leaveLobby() {
 
 	cl := c.cl
 
-	if len(cl.LobbyID) > 0 {
-		l, err := lserv.GetLobbyByID(cl.LobbyID)
+	if c.l != nil {
+
+		l, err := lserv.GetLobbyByID(c.l.ID)
 		if err != nil {
 			log.Warn("lserv.GetLobbyByID: %v", err)
 			return
@@ -166,15 +162,15 @@ func (c context) addCommands() {
 		},
 	}
 
-	c.cl.Conn.AddCommand("lobby", msgstrct)
-	c.cl.Conn.AddCommand("lobbies", conn.MessageStruct{
+	c.cl.AddCommand("lobby", msgstrct)
+	c.cl.AddCommand("lobbies", conn.MessageStruct{
 		"get": func(log logger.Logger, _ []byte) error {
 			body, err := c.marshalLobbies()
 			if err != nil {
 				return fmt.Errorf("c.marshalLobbies: %w", err)
 			}
 
-			c.cl.Conn.WriteBytes(body)
+			c.cl.WriteBytes(body)
 
 			return nil
 		},
@@ -183,8 +179,8 @@ func (c context) addCommands() {
 
 // addDestroyHandler adds a destroy handler
 func (c context) addDestroyHandler() {
-	<-c.cl.Conn.GetDone()
-	if len(c.cl.LobbyID) > 0 {
+	<-c.cl.GetDone()
+	if c.l != nil {
 		c.leaveLobby()
 	}
 }
@@ -197,6 +193,10 @@ func NewWebsocketRoute(config WebsocketConfig) gin.HandlerFunc {
 	if debuglobby {
 		config.Log.Debug("Debugging lobby and game")
 	}
+
+	lc := logger.DefaultConfig
+	lc.Prefix = "conn"
+	lc.PAttr = color.New(color.FgHiYellow, color.Italic)
 
 	return func(ginc *gin.Context) {
 		lserv, cserv := config.LobbyService, config.ClientService
@@ -217,24 +217,31 @@ func NewWebsocketRoute(config WebsocketConfig) gin.HandlerFunc {
 			}
 		}
 
-		wsconn, _, _, err := ws.UpgradeHTTP(ginc.Request, ginc.Writer)
-
+		netconn, _, _, err := ws.UpgradeHTTP(ginc.Request, ginc.Writer)
 		if err != nil {
 			log.Warn("cannot upgrade: %v", err)
 			return
 		}
 
-		cl, err := cserv.CreateClient(wsconn, user)
+		cl, err := cserv.GetClientByID(user.ID)
 		if err != nil {
-			log.Warn("cannot create client: %v", err)
-			return
+			cl, err = cserv.CreateClient(user)
+			if err != nil {
+				log.Warn("cannot get client: %v", err)
+				return
+			}
 		}
 
-		config.cl = cl
+		wslog := logger.NewLogger(lc)
+		wsconn := conn.NewConn(netconn, cl)
+
+		wslog.SetSuffix(cl.ID)
+
 		c := context{
-			ginc,
-			config,
+			Context:         ginc,
+			WebsocketConfig: config,
 		}
+		c.cl = wsconn
 
 		go c.addCommands()
 		go c.addDestroyHandler()
@@ -245,7 +252,7 @@ func NewWebsocketRoute(config WebsocketConfig) gin.HandlerFunc {
 			return
 		}
 
-		cl.Conn.WriteBytes(body)
+		c.cl.WriteBytes(body)
 
 		if debuglobby {
 			ls, err := lserv.GetAllLobbies()
@@ -258,7 +265,7 @@ func NewWebsocketRoute(config WebsocketConfig) gin.HandlerFunc {
 				// if there is an existing lobby, add new clients to it
 				l := ls[0]
 				time.Sleep(time.Millisecond * 50)
-				err = l.Join(cl)
+				err = l.Join(c.cl)
 				if err != nil {
 					log.Debug("lobby.Join(%s): %v", cl.ID, err)
 				}
@@ -270,7 +277,7 @@ func NewWebsocketRoute(config WebsocketConfig) gin.HandlerFunc {
 
 				if err == nil {
 					time.Sleep(time.Millisecond * 50)
-					err = cl.Conn.ExecuteCommand("lobby", "create", bytes)
+					err = c.cl.ExecuteCommand("lobby", "create", bytes)
 					if err != nil {
 						log.Debug("c.Conn.ExecuteCommand: %v", err)
 					}

@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"time"
 
+	"github.com/toms1441/resistance-server/internal/client"
 	"github.com/toms1441/resistance-server/internal/logger"
 )
 
@@ -16,11 +18,19 @@ type mock struct {
 	mtx  sync.Mutex
 	done []chan bool
 	pipe net.Conn
+	cl   client.Client
 }
 
-func NewMockConnHelper(slog, clog logger.Logger) (sconn Conn, cconn Conn) {
+func (m *mock) MarshalJSON() ([]byte, error) {
+	m.mtx.Lock()
+	defer m.mtx.Unlock()
+	return json.Marshal(struct{}{})
+}
+
+func NewMockConnHelper(cl client.Client) (sconn Conn, cconn Conn) {
 	spipe, cpipe := net.Pipe()
 
+	var slog, clog logger.Logger
 	if slog == nil {
 		slog = logger.NullLogger()
 	}
@@ -29,25 +39,26 @@ func NewMockConnHelper(slog, clog logger.Logger) (sconn Conn, cconn Conn) {
 		clog = logger.NullLogger()
 	}
 
-	return NewMockConn(spipe, slog), NewMockConn(cpipe, clog)
+	sconn, cconn = NewMockConn(spipe, client.Client{}), NewMockConn(cpipe, cl)
+	sconn.SetLogger(slog)
+	cconn.SetLogger(clog)
+
+	return sconn, cconn
 }
 
-func NewMockConn(cl net.Conn, log logger.Logger) Conn {
+func NewMockConn(cn net.Conn, cl client.Client) Conn {
 
 	m := &mock{
-		pipe: cl,
-		log:  log,
-	}
-
-	if log == nil {
-		m.log = logger.NullLogger()
+		pipe: cn,
+		cl:   cl,
+		log:  logger.NullLogger(),
 	}
 
 	m.cmd = map[string]MessageStruct{}
 
 	go func(m *mock) {
-
-		var body = make([]byte, 1024*8)
+		size := 1024 * 8
+		body := make([]byte, size)
 		for {
 			n, err := m.pipe.Read(body)
 			if n == 0 {
@@ -55,6 +66,7 @@ func NewMockConn(cl net.Conn, log logger.Logger) Conn {
 			}
 
 			if err != nil {
+				fmt.Println("destroyed conn from read")
 				m.Destroy()
 			}
 
@@ -63,8 +75,8 @@ func NewMockConn(cl net.Conn, log logger.Logger) Conn {
 			messagejson := MessageRecv{}
 			err = json.Unmarshal(bts, &messagejson)
 			if err != nil {
-				fmt.Println(string(body))
-				fmt.Println(err)
+				fmt.Printf("error with json: %s.%s: %v\n", messagejson.Group, messagejson.Name, err)
+				fmt.Printf("%s\n", string(bts))
 			}
 
 			if len(messagejson.Group) > 0 {
@@ -86,6 +98,8 @@ func NewMockConn(cl net.Conn, log logger.Logger) Conn {
 				}
 				m.mtx.Unlock()
 			}
+
+			body = make([]byte, size)
 		}
 	}(m)
 
@@ -157,6 +171,7 @@ func (m *mock) WriteMessage(ms MessageSend) error {
 }
 
 func (m *mock) WriteBytes(body []byte) {
+	m.pipe.SetWriteDeadline(time.Now().Add(time.Millisecond * 50))
 	m.pipe.Write(body)
 }
 
@@ -180,5 +195,12 @@ func (m *mock) Destroy() {
 	}
 	m.pipe.Close()
 	m.mtx.Unlock()
+}
 
+func (m *mock) GetClient() (c client.Client) {
+	return m.cl
+}
+
+func (m *mock) SetLogger(log logger.Logger) {
+	m.log = log
 }

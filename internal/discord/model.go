@@ -16,14 +16,14 @@ type User struct {
 	Avatar string `json:"avatar"`
 }
 
-// GetEmail returns the email for the user
-func (u User) GetEmail() string {
-	return u.email
-}
-
 type user struct {
 	User
 	Email string `json:"email"`
+}
+
+// GetEmail returns the email for the user
+func (u User) GetEmail() string {
+	return u.email
 }
 
 // IsValid returns a boolean value if the user is valid or not.

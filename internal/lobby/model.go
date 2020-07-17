@@ -3,28 +3,33 @@ package lobby
 import (
 	"encoding/json"
 	"errors"
-	"strconv"
+	"sort"
 
 	"github.com/toms1441/resistance-server/internal/client"
 	"github.com/toms1441/resistance-server/internal/conn"
 	"github.com/toms1441/resistance-server/internal/logger"
 	"github.com/toms1441/resistance-server/internal/repo"
-	"gopkg.in/go-playground/validator.v9"
 )
 
 // Lobby the lobby that the clients will be in, it gathers maximum of 10 players. and is used later to transform into a Game.
 // The lobby's owner is client with index 0.
 type Lobby struct {
-	ID      string          `json:"id"`
-	Type    Type            `json:"type"`
-	Private bool            `json:"private"`
-	Clients []client.Client `json:"clients"`
+	ID      string
+	Type    Type
+	Private bool
+	Clients []client.Client
+	conns   map[string]conn.Conn
 
-	insert []chan client.Client
-	remove []chan client.Client
+	// lobby owner
+	owner string `json:"owner"`
+
+	insert []chan conn.Conn
+	remove []chan conn.Conn
 
 	log logger.Logger
 }
+
+type Clients []client.Client
 
 // Type needs to be between TypeBasic(0) and TypeTrumpmode(4)
 type Type uint8
@@ -64,8 +69,6 @@ const (
 	TypeTrumpmode
 )
 
-var validate *validator.Validate
-
 var (
 	// ErrID if len(id) != idlength.
 	ErrID = errors.New("Lobby ID is not valid")
@@ -75,63 +78,118 @@ var (
 	ErrChannel = errors.New("Lobby channels(l.Insert, l.Remove) are nil.")
 )
 
+// Equal compares two different lobbies
+func (l *Lobby) Equal(l2 *Lobby) bool {
+	ref1 := *l
+	ref2 := *l2
+
+	if ref1.ID != ref2.ID {
+		return false
+	}
+
+	if ref1.Type != ref2.Type {
+		return false
+	}
+
+	if ref1.Private != ref2.Private {
+		return false
+	}
+
+	if len(ref1.Clients) != len(ref2.Clients) {
+		return false
+	}
+
+	id1 := []string{}
+	for _, v := range ref1.Clients {
+		if v.IsValid() {
+			id1 = append(id1, v.ID)
+		}
+	}
+
+	id2 := []string{}
+	for _, v := range ref2.Clients {
+		if v.IsValid() {
+			id2 = append(id2, v.ID)
+		}
+	}
+
+	len1 := len(id1)
+	len2 := len(id2)
+	if len1 != len2 {
+		return false
+	}
+
+	for k := range id1 {
+		v1 := id1[k]
+		v2 := id2[k]
+
+		if v1 != v2 {
+			return false
+		}
+	}
+
+	return true
+}
+
 // SetLogger sets the logger for the lobby.
 // Used with lobby.service to provide better logs.
 func (l *Lobby) SetLogger(log logger.Logger) {
 	l.log = log
 }
 
-// GetClientIndex returns the client index by it's id.
-func (l *Lobby) GetClientIndex(id string) int {
-	for k, v := range l.Clients {
-		if v.ID == id {
-			return k
-		}
-	}
-
-	return -1
-}
-
-// GetClient returns a client by it's id.
-func (l *Lobby) GetClient(id string) (c client.Client) {
-	c = client.Client{}
-	if i := l.GetClientIndex(id); i >= 0 {
-		c = l.Clients[i]
-	}
-
-	return
-}
-
 // Join inserts a client into the lobby, and updates the rest of the clients.
-func (l *Lobby) Join(c client.Client) error {
+func (l *Lobby) Join(c conn.Conn) error {
 
-	i := l.GetClientIndex(c.ID)
-	if i == -1 {
-		l.Clients = append(l.Clients, c)
+	if len(c.GetClient().ID) == 0 {
+		return repo.ErrClientInvalid
+	}
 
-		c.LobbyID = l.ID
-		// update all lobby handlers
+	if l.log == nil {
+		l.log = logger.NullLogger()
+	}
+
+	_, ok := l.conns[c.GetClient().ID]
+	if !ok {
+
+		if l.conns == nil {
+			l.conns = map[string]conn.Conn{}
+		}
+
+		l.conns[c.GetClient().ID] = c
+		if l.GetClientIndex(c.GetClient().ID) == -1 {
+			l.Clients = append(l.Clients, c.GetClient())
+		}
+
 		for _, v := range l.insert {
 			v <- c
 		}
 
-		l.addCommands(l.Clients[0])
-		l.log.Debug("l.Join: %v", c.ID)
+		keys := []string{}
+		for _, v := range l.conns {
+			keys = append(keys, v.GetClient().ID)
+		}
+		sort.Strings(keys)
+
+		sort.Slice(l.Clients, func(i, j int) bool {
+			return l.Clients[i].ID < l.Clients[j].ID
+		})
+
+		if l.owner == "" {
+			l.owner = keys[0]
+		}
+
+		l.log.Debug("l.Join: %v", c.GetClient().ID)
 
 		// When the connection closes, remove the lobby.
-		go func(l *Lobby, c client.Client, done chan bool) {
+		go func(l *Lobby, c conn.Conn) {
 			for {
 				select {
-				case <-done:
+				case <-c.GetDone():
 					l.Leave(c)
 					return
-				default:
-					if c.LobbyID != l.ID {
-						return
-					}
 				}
 			}
-		}(l, c, c.Conn.GetDone())
+		}(l, c)
 
 		err := l.Send()
 		if err != nil {
@@ -146,33 +204,51 @@ func (l *Lobby) Join(c client.Client) error {
 }
 
 // Leave removes a client from the lobby, and updates the rest of the clients.
-func (l *Lobby) Leave(c client.Client) error {
+func (l *Lobby) Leave(c conn.Conn) error {
 
-	i := l.GetClientIndex(c.ID)
-	if i >= 0 {
-		if len(l.Clients) == 0 {
+	if l.log == nil {
+		l.log = logger.NullLogger()
+	}
+
+	if len(c.GetClient().ID) == 0 {
+		return repo.ErrClientInvalid
+	}
+
+	if i := l.GetClientIndex(c.GetClient().ID); i >= 0 {
+		// order matters
+		l.Clients = append(l.Clients[:i], l.Clients[i+1:]...)
+	}
+
+	_, ok := l.conns[c.GetClient().ID]
+	// i.e the connection is in the map
+	if ok {
+		if len(l.conns) == 0 {
 			return nil
 		}
 
 		// it's just easier to copy the value and replace
 		// https://stackoverflow.com/questions/37334119/how-to-delete-an-element-from-a-slice-in-golang
-		l.Clients[len(l.Clients)-1], l.Clients[i] = l.Clients[i], l.Clients[len(l.Clients)-1]
-		l.Clients = l.Clients[:len(l.Clients)-1]
+		delete(l.conns, c.GetClient().ID)
 
 		// double-check cause we might've removed the last player
-		if len(l.Clients) > 0 {
-			firstc := l.Clients[0]
-			if firstc.IsValid() {
+		if len(l.conns) > 0 {
+			id := []string{}
+			for k := range l.conns {
+				id = append(id, k)
+			}
+			sort.Strings(id)
+
+			firstc := l.conns[id[0]]
+			if firstc.GetClient().IsValid() {
 				l.addCommands(firstc)
 			}
 		}
 
-		c.LobbyID = ""
 		for _, v := range l.remove {
 			v <- c
 		}
 
-		l.log.Debug("l.Remove: %v", c.ID)
+		l.log.Debug("l.Remove: %v", c.GetClient().ID)
 		err := l.Send()
 		l.log.Debug("l.Send: %v", err)
 		if err != nil {
@@ -185,31 +261,51 @@ func (l *Lobby) Leave(c client.Client) error {
 	return repo.ErrClient404
 }
 
-// Subscribe returns two channels, one for insert and remove.
-// It's used to indicate a change in the client list
-func (l *Lobby) Subscribe() (insert, remove chan client.Client) {
-	return l.SubscribeInsert(), l.SubscribeRemove()
-}
-
-func (l *Lobby) SubscribeInsert() (insert chan client.Client) {
-	insert = make(chan client.Client)
+// SubscribeInsert returns a channel that gets set whenever a client joins
+func (l *Lobby) SubscribeInsert() (insert chan conn.Conn) {
+	insert = make(chan conn.Conn)
 	if l.insert == nil {
-		l.insert = []chan client.Client{}
+		l.insert = []chan conn.Conn{}
 	}
 
 	l.insert = append(l.insert, insert)
 	return insert
 }
 
-func (l *Lobby) SubscribeRemove() (remove chan client.Client) {
-	remove = make(chan client.Client)
-
+// SubscribeRemove returns a channel that gets set whenever a client leaves
+func (l *Lobby) SubscribeRemove() (remove chan conn.Conn) {
+	remove = make(chan conn.Conn)
 	if l.remove == nil {
-		l.remove = []chan client.Client{}
+		l.remove = []chan conn.Conn{}
 	}
 
 	l.remove = append(l.remove, remove)
 	return remove
+}
+
+func (l *Lobby) removesubscribe(slice []chan conn.Conn, chcon chan conn.Conn) []chan conn.Conn {
+	a := slice
+
+	for i, v := range slice {
+		if v == chcon {
+
+			a[i] = a[len(a)-1] // Copy last element to index i.
+			a[len(a)-1] = nil  // Erase last element (write zero value).
+			a = a[:len(a)-1]
+
+			break
+		}
+	}
+
+	return a
+}
+
+func (l *Lobby) RemoveSubscribeInsert(insert chan conn.Conn) {
+	l.insert = l.removesubscribe(l.insert, insert)
+}
+
+func (l *Lobby) RemoveSubscribeRemove(remove chan conn.Conn) {
+	l.remove = l.removesubscribe(l.remove, remove)
 }
 
 // Send send the clients information about the lobby, it's called whenever a client joins or leaves the lobby.
@@ -221,11 +317,25 @@ func (l *Lobby) Send() error {
 		return err
 	}
 
-	for _, v := range l.Clients {
-		v.Conn.WriteBytes(bytes)
+	for _, v := range l.conns {
+		v.WriteBytes(bytes)
 	}
 
 	return nil
+}
+
+// GetClientIndex returns the client index by id.
+func (l *Lobby) GetClientIndex(id string) (i int) {
+	i = -1
+
+	for k, v := range l.Clients {
+		if v.ID == id {
+			i = k
+			break
+		}
+	}
+
+	return
 }
 
 // MessageSend is a method that returns conn.MessageSend
@@ -239,20 +349,6 @@ func (l *Lobby) MessageSend() conn.MessageSend {
 
 // Validate validates the lobby, it includes ID and Type validators as well as validate.Struct(lobby)
 func (l *Lobby) Validate() (err error) {
-	if validate == nil {
-		validate = validator.New()
-	}
-
-	if err = validate.Struct(l); err != nil {
-		return
-	}
-
-	_, err = strconv.Atoi(l.ID)
-	// i.e 	the length of digits is same of LOBBY_ID_LENGTH
-	// 		and the charaters are all numbers
-	if len(l.ID) != gConfig.IDLen || err != nil {
-		return ErrID
-	}
 
 	// i.e	it's between BASIC(which is 0) and TRUMPMODE(which is 4)
 	if l.Type < TypeBasic || l.Type > TypeTrumpmode {

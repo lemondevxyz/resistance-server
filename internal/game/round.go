@@ -161,13 +161,15 @@ func (g *Game) runRound(ri int) (b bool) {
 	assignees := []string{}
 	for _, id := range g.Rounds[ri].Missions[mi].Assignees {
 		// because they're stored in id form we have to loop
-		p := g.GetPlayer(id)
-		if !p.IsValid() {
-			g.log.Debug("!p.IsValid: %s", id)
-			continue
+		p, ok := g.Players[id]
+		if ok {
+			if !p.IsValid() {
+				g.log.Debug("!p.IsValid: %s", id)
+				continue
+			}
 		}
 
-		assignees = append(assignees, fmt.Sprintf("@%s#%s", p.User.Username, p.User.Discriminator))
+		assignees = append(assignees, fmt.Sprintf("@%s#%s", p.GetClient().Username, p.GetClient().Discriminator))
 	}
 	g.log.Debug("assignees = %v", assignees)
 
@@ -200,10 +202,12 @@ func (g *Game) startDecidingPhase(cancel context.CancelFunc, ri int, mi int) err
 	var assignees = g.Rounds[ri].Missions[mi].Assignees
 
 	for _, v := range assignees {
-		p := g.GetPlayer(v)
+		p, ok := g.Players[v]
 
-		if !p.IsValid() {
-			return ErrInvalidPlayer
+		if ok {
+			if !p.IsValid() {
+				return ErrInvalidPlayer
+			}
 		}
 
 		p.Conn.AddCommand("game", conn.MessageStruct{
@@ -221,9 +225,9 @@ func (g *Game) startDecidingPhase(cancel context.CancelFunc, ri int, mi int) err
 				}
 
 				if !success {
-					g.Rounds[ri].failure = append(g.Rounds[ri].failure, p.ID)
+					g.Rounds[ri].failure = append(g.Rounds[ri].failure, p.GetClient().ID)
 				} else {
-					g.Rounds[ri].success = append(g.Rounds[ri].success, p.ID)
+					g.Rounds[ri].success = append(g.Rounds[ri].success, p.GetClient().ID)
 				}
 
 				round := g.Rounds[ri]

@@ -96,6 +96,9 @@ const Space = 20
 func (l *log) SetSuffix(str string) {
 	size := Space - len(str)
 	str = strings.Repeat(" ", size) + str
+	if len(str) > Space {
+		str = str[:16] + "..."
+	}
 
 	l.config.Suffix = str
 }

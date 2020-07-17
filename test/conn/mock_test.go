@@ -10,24 +10,26 @@ import (
 	"testing"
 	"time"
 
-	"github.com/toms1441/resistance-server/internal/logger"
+	"github.com/toms1441/resistance-server/internal/client"
+	"github.com/toms1441/resistance-server/internal/conn"
 )
 
-var sconn, cconn Conn
+var sconn, cconn conn.Conn
 var pipe1, pipe2 net.Conn
 var mockresp = make(chan int)
 
 func TestNewMockConn(t *testing.T) {
 
 	pipe1, pipe2 = net.Pipe()
-	sconn = NewMockConn(pipe1, logger.NullLogger())
+	sconn = conn.NewMockConn(pipe1, client.Client{})
 
 }
 
 func TestMockWriteBytes(t *testing.T) {
 
 	msg := []byte("message")
-	done := make(chan bool)
+	done := make(chan int)
+	i := 0
 	go func() {
 		var body = make([]byte, len(msg))
 		for {
@@ -42,21 +44,34 @@ func TestMockWriteBytes(t *testing.T) {
 
 			val := bytes.Compare(body, msg)
 			if val == 0 {
-				done <- true
-				return
-			}
+				i++
 
+				done <- i
+				if i == 3 {
+					return
+				}
+			}
 		}
 	}()
 
-	sconn.WriteBytes(msg)
-
-	select {
-	case <-done:
-		break
-	case <-time.After(time.Millisecond * 100):
-		t.Fatalf("timed out")
+	test := func(want int) {
+		select {
+		case have := <-done:
+			if want != have {
+				t.Fatalf("want: %d, have: %d", want, have)
+			}
+		case <-time.After(time.Millisecond * 100):
+			t.Fatalf("timed out")
+		}
 	}
+
+	// test multiple writes
+	sconn.WriteBytes(msg)
+	test(1)
+	sconn.WriteBytes(msg)
+	test(2)
+	sconn.WriteBytes(msg)
+	test(3)
 
 	/*
 		cconn = NewMockConn(pipe2, logger.NewLogger(logger.DefaultConfig))
@@ -68,7 +83,7 @@ func TestMockReadBytes(t *testing.T) {
 
 	sconn.AddCommand("test", getstrct(mockresp, 0))
 
-	body, err := json.Marshal(MessageSend{
+	body, err := json.Marshal(conn.MessageSend{
 		Group: "test",
 		Name:  "null",
 	})
@@ -92,12 +107,12 @@ func TestMockReadBytes(t *testing.T) {
 func TestMockWriteMessage(t *testing.T) {
 
 	if cconn == nil {
-		cconn = NewMockConn(pipe2, logger.NullLogger())
+		cconn = conn.NewMockConn(pipe2, client.Client{})
 	}
 
 	//sconn.AddCommand("test", strct)
 
-	err := cconn.WriteMessage(MessageSend{
+	err := cconn.WriteMessage(conn.MessageSend{
 		Group: "test",
 		Name:  "null",
 	})
@@ -147,7 +162,7 @@ func TestMockExecuteCommand(t *testing.T) {
 func TestMockRemoveCommandsByNames(t *testing.T) {
 	sconn.RemoveCommandsByNames("test", "null")
 
-	err := cconn.WriteMessage(MessageSend{
+	err := cconn.WriteMessage(conn.MessageSend{
 		Group: "test",
 		Name:  "null",
 		Body:  nil,
@@ -170,7 +185,7 @@ func TestMockRemoveCommandsByGroup(t *testing.T) {
 
 	sconn.RemoveCommandsByGroup("test")
 
-	ms := MessageSend{
+	ms := conn.MessageSend{
 		Group: "test",
 		Name:  "nulltwo",
 	}

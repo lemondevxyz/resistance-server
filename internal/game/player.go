@@ -1,12 +1,19 @@
 package game
 
-import "github.com/toms1441/resistance-server/internal/client"
+import (
+	"encoding/json"
+
+	"github.com/toms1441/resistance-server/internal/conn"
+)
 
 // Player is a wrapper around client, containing the playertype.
 type Player struct {
-	client.Client `json:"-"`
-	ID            string     `json:"id"`
-	Type          PlayerType `json:"type"`
+	conn.Conn
+	Type PlayerType `json:"type"`
+}
+
+func (p Player) MarshalJSON() ([]byte, error) {
+	return json.Marshal(p.Type)
 }
 
 const (
@@ -43,17 +50,16 @@ const (
 // Values are between PlayerTypeDefault and PlayerTypeMorgana
 type PlayerType uint8
 
-func newPlayer(c client.Client) Player {
+func newPlayer(c conn.Conn) Player {
 	return Player{
-		Client: c,
-		ID:     c.ID,
-		Type:   PlayerTypeDefault,
+		Conn: c,
+		Type: PlayerTypeDefault,
 	}
 }
 
 // IsValid is a function that returns a boolean value representing the validity of the Player.
 func (p Player) IsValid() bool {
-	if p.Client.IsValid() {
+	if p.GetClient().IsValid() {
 		if p.Type != PlayerTypeDefault {
 			return true
 		}

@@ -8,12 +8,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/toms1441/resistance-server/internal/client"
+	"github.com/toms1441/resistance-server/internal/conn"
 	"github.com/toms1441/resistance-server/internal/logger"
 )
 
 // Service is a service that uses the repo in-order to do database actions.
 type Service interface {
+	// SetLogger sets the logger for the service.
+	SetLogger(log logger.Logger)
 	// CreateLobby creates a lobby
 	CreateLobby(lobby *Lobby) error
 	// GetLobbyByID returns a lobby that has the same id
@@ -29,14 +31,21 @@ type Service interface {
 }
 
 type service struct {
-	repo Repository
-	log  logger.Logger
+	repo   Repository
+	config Config
+	log    logger.Logger
 }
 
 var ErrNil = errors.New("lobby is nil")
+var ErrRepositoryNil = errors.New("Repository is nil")
 
 // NewService returns a new lobby service. It can be used to create, read, update and delete.
-func NewService(repo Repository, log logger.Logger, config Config) (Service, error) {
+func NewService(repo Repository, config Config) (Service, error) {
+
+	if repo == nil {
+		return nil, ErrRepositoryNil
+	}
+
 	if !repo.IsValid() {
 		return nil, fmt.Errorf("repo.IsValid")
 	}
@@ -74,13 +83,16 @@ func NewService(repo Repository, log logger.Logger, config Config) (Service, err
 	}
 	config.min = min
 
-	gConfig = config
-	log.Info("Initiated service")
-
 	return &service{
-		repo: repo,
-		log:  log,
+		repo:   repo,
+		config: config,
+		log:    logger.NullLogger(),
 	}, nil
+}
+
+// SetLogger sets the logger for the service
+func (s *service) SetLogger(log logger.Logger) {
+	s.log = log
 }
 
 // CreateLobby creates a new lobby.
@@ -93,7 +105,7 @@ func (s *service) CreateLobby(l *Lobby) error {
 	var id int
 
 	for {
-		id = gConfig.min + rand.Intn(gConfig.max-gConfig.min)
+		id = s.config.min + rand.Intn(s.config.max-s.config.min)
 		templ := &Lobby{
 			ID: strconv.Itoa(id),
 		}
@@ -118,19 +130,20 @@ func (s *service) CreateLobby(l *Lobby) error {
 
 	log := s.log.Replicate()
 	space := logger.Space - len(l.Type.String()) - len(l.ID)
-	log.SetSuffix(l.Type.String() + strings.Repeat(" ", space) + l.ID)
+	suffix := l.Type.String() + strings.Repeat(" ", space) + l.ID
+	log.SetSuffix(suffix)
 
 	l.SetLogger(log)
 
 	remove := l.SubscribeRemove()
-	go func(l *Lobby, r chan client.Client) {
+	go func(l *Lobby, r chan conn.Conn) {
 		for {
 			select {
-			case <-r:
+			case c := <-r:
 				// in-case there are no players left destroy the lobby
-				if len(l.Clients) == 0 {
+				if len(l.conns) == 0 {
 					//s.log.Debug("l.Clients == 0")
-					err := s.RemoveLobby(l.ID)
+					err := s.RemoveLobby(c.GetClient().ID)
 					if err != nil {
 						s.log.Warn("s.RemoveLobby != nil: %v", err)
 					}
@@ -138,13 +151,14 @@ func (s *service) CreateLobby(l *Lobby) error {
 			}
 		}
 	}(l, remove)
+	l.log.Info("created lobby: %v - %v", l.Type.String(), l.ID)
 
 	return nil
 }
 
 // GetLobbyByID returns a lobby by it's id.
 func (s *service) GetLobbyByID(id string) (*Lobby, error) {
-	if len(id) == gConfig.IDLen {
+	if len(id) == s.config.IDLen {
 		l, err := s.repo.GetByID(id)
 		if err == nil {
 			return l, err

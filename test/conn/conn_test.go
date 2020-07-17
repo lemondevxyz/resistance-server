@@ -13,18 +13,30 @@ import (
 
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
+	"github.com/toms1441/resistance-server/internal/client"
+	"github.com/toms1441/resistance-server/internal/conn"
+	"github.com/toms1441/resistance-server/internal/discord"
 	"github.com/toms1441/resistance-server/internal/logger"
 	"golang.org/x/net/context"
 )
 
 var ln net.Listener
 var nconn net.Conn
-var iconn Conn
+var iconn conn.Conn
 var wg sync.WaitGroup
+
 var connresp = make(chan int)
 
-func getstrct(response chan int, ind int) MessageStruct {
-	return MessageStruct{
+var cl = client.Client{
+	User: discord.User{
+		ID:            "80351110224678912",
+		Username:      "Nelly",
+		Discriminator: "1337",
+	},
+}
+
+func getstrct(response chan int, ind int) conn.MessageStruct {
+	return conn.MessageStruct{
 		"null": func(_ logger.Logger, _ []byte) error {
 			ind++
 			response <- ind
@@ -66,19 +78,19 @@ func TestNewListener(t *testing.T) {
 
 	go func(ln net.Listener) {
 		for {
-			conn, err := ln.Accept()
+			netconn, err := ln.Accept()
 			if err != nil {
 				fmt.Printf("ln.Accept: %v", err)
 				os.Exit(1)
 			}
 
-			_, err = ws.Upgrade(conn)
+			_, err = ws.Upgrade(netconn)
 			if err != nil {
 				fmt.Printf("ws.Upgrade: %v", err)
 				os.Exit(1)
 			}
 
-			iconn = NewConn(conn, logger.NullLogger())
+			iconn = conn.NewConn(netconn, cl)
 			wg.Done()
 		}
 	}(ln)
@@ -106,7 +118,7 @@ func TestAddCommand(t *testing.T) {
 	wg.Wait()
 	iconn.AddCommand("test", getstrct(connresp, 0))
 
-	ms := MessageSend{
+	ms := conn.MessageSend{
 		Group: "test",
 		Name:  "null",
 		Body:  nil,
@@ -163,7 +175,7 @@ func TestExecuteCommand(t *testing.T) {
 func TestRemoveCommandsByNames(t *testing.T) {
 	iconn.RemoveCommandsByNames("test", "null")
 
-	body, err := json.Marshal(MessageSend{
+	body, err := json.Marshal(conn.MessageSend{
 		Group: "test",
 		Name:  "null",
 		Body:  nil,
@@ -191,7 +203,7 @@ func TestRemoveCommandsByGroup(t *testing.T) {
 
 	iconn.RemoveCommandsByGroup("test")
 
-	ms := MessageSend{
+	ms := conn.MessageSend{
 		Group: "test",
 		Name:  "nulltwo",
 	}
@@ -224,7 +236,7 @@ func TestRemoveCommandsByGroup(t *testing.T) {
 func TestWriteMessage(t *testing.T) {
 
 	go func() {
-		err := iconn.WriteMessage(MessageSend{
+		err := iconn.WriteMessage(conn.MessageSend{
 			Group: "test",
 			Name:  "null",
 			Body:  nil,
@@ -240,7 +252,7 @@ func TestWriteMessage(t *testing.T) {
 		t.Fatalf("wsutil.ReadServerText: %v", err)
 	}
 
-	mr := MessageRecv{}
+	mr := conn.MessageRecv{}
 
 	err = json.Unmarshal(body, &mr)
 	if err != nil {
@@ -248,7 +260,7 @@ func TestWriteMessage(t *testing.T) {
 	}
 
 	if mr.Group != "test" || mr.Name != "null" {
-		t.Fatalf(`mr != MessageRecv{group: "test", name: "null"}`)
+		t.Fatalf(`mr != conn.MessageRecv{group: "test", name: "null"}`)
 	}
 
 }

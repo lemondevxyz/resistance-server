@@ -9,6 +9,7 @@ import (
 
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
+	"github.com/toms1441/resistance-server/internal/client"
 	"github.com/toms1441/resistance-server/internal/logger"
 )
 
@@ -24,6 +25,7 @@ type connStruct struct {
 	conn net.Conn                 // an actual connection
 	send *sendChannel             // a channel to send bytes to the connection
 	cmd  map[string]MessageStruct // a map of commands
+	cl   client.Client
 
 	mtx sync.Mutex
 
@@ -72,19 +74,37 @@ func (s *sendChannel) isclosed() bool {
 	return s.closed
 }
 
-// NewConn creates the helper from an upgraded websocket connection and logger.
-func NewConn(conn net.Conn, log logger.Logger) Conn {
+var connsmtx sync.Mutex
 
-	if log == nil {
-		log = logger.NullLogger()
-	}
+// repository cannot marshal and have access to functions.
+var conns = map[string]Conn{}
+
+func AllConn() map[string]Conn {
+	return conns
+}
+
+// NewConn creates the helper from an upgraded websocket connection and logger.
+func NewConn(conn net.Conn, cl client.Client) Conn {
 
 	c := &connStruct{
 		conn: conn,
 		send: newSendChannel(make(chan []byte, 256)),
-		log:  log,
+		log:  logger.NullLogger(),
 		cmd:  map[string]MessageStruct{},
+		cl:   cl,
 	}
+
+	connsmtx.Lock()
+	oldconn, ok := conns[cl.ID]
+	if ok {
+		done := oldconn.GetDone()
+		oldconn.Destroy()
+		<-done
+		delete(conns, cl.ID)
+	}
+	connsmtx.Unlock()
+
+	conns[cl.ID] = c
 
 	go c.write()
 	go c.read()
@@ -188,6 +208,14 @@ func (c *connStruct) GetDone() chan bool {
 	defer c.mtx.Unlock()
 	c.done = append(c.done, done)
 	return done
+}
+
+func (c *connStruct) GetClient() client.Client {
+	return c.cl
+}
+
+func (c *connStruct) SetLogger(log logger.Logger) {
+	c.log = log
 }
 
 func (c *connStruct) write() {

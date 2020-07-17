@@ -18,15 +18,18 @@ var DefaultConfig = Config{
 	MaxClient: 10,
 }
 
-var gConfig = DefaultConfig
+var (
+	ErrMaxClientZero = errors.New("Maxclient cannot be zero or less")
+	ErrIDLengthZero  = errors.New("ID Length cannot be zero or less")
+)
 
 func (c Config) Validate() error {
-	if c.MaxClient == 0 {
-		return errors.New("MaxClient is 0")
+	if c.MaxClient <= 0 {
+		return ErrMaxClientZero
 	}
 
-	if c.IDLen == 0 {
-		return errors.New("IDLen is 0")
+	if c.IDLen <= 0 {
+		return ErrIDLengthZero
 	}
 
 	return nil
