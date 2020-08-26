@@ -222,16 +222,20 @@ func (g *Game) Broadcast(ms conn.MessageSend) {
 			v.Conn.WriteBytes(bytes)
 		}
 	}
+	g.log.Debug("Sent Message: %s.%s", ms.Group, ms.Name)
 }
 
 // Run runs the game and sets chan<- Status when the game is done.
 func (g *Game) Run(s chan<- Status) {
+
 	defer func(s chan<- Status) {
 		s <- g.getStatus()
 	}(s)
 
 	g.Send()
 	for ri := 0; ri < 5; ri++ {
+		// g.runRound is a blocking method that returns whenever the round is finished
+		// in-case it returned true, that means all missions failed
 		if g.runRound(ri) {
 			break
 		}
@@ -314,11 +318,26 @@ func (g *Game) Send() {
 }
 
 func (g *Game) SetCaptain() {
-	ids := []string{}
 
-	for k := range g.Players {
-		ids = append(ids, k)
+	index := -1
+	for k, v := range g.playerids {
+		if v == g.captain {
+			index = k
+		}
 	}
 
-	g.captain = ids[rand.Intn(len(ids))]
+	if index == -1 {
+		// if we couldn't find the current captain
+		// set the captain index by a random client in the playerids
+		index = rand.Intn(len(g.playerids))
+	} else {
+		// else just get the next player inline
+		index++
+		// if the index reached the last player, reset it
+		if index == len(g.playerids) {
+			index = 0
+		}
+	}
+
+	g.captain = g.playerids[index]
 }

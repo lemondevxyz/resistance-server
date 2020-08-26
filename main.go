@@ -9,6 +9,7 @@ import (
 	"github.com/gin-contrib/sessions"
 	"github.com/gin-contrib/sessions/cookie"
 	"github.com/gin-gonic/gin"
+	"github.com/kjk/betterguid"
 	"github.com/toms1441/resistance-server/internal/client"
 	"github.com/toms1441/resistance-server/internal/config"
 	"github.com/toms1441/resistance-server/internal/discord"
@@ -80,6 +81,17 @@ func main() {
 		})
 	}
 
+	// because we're testing the new terminal client
+	discriminator := 1000
+	getuser = func(c *gin.Context) (discord.User, error) {
+		discriminator++
+		return discord.User{
+			ID:            betterguid.New(),
+			Username:      "test user",
+			Discriminator: fmt.Sprintf("%04d", discriminator),
+		}, nil
+	}
+
 	// lobby service init
 	// make the lobby service kinda global
 	// so we can use it in websocket route
@@ -94,10 +106,12 @@ func main() {
 		lrepo := plain.NewLobbyRepository()
 
 		var err error
-		lserv, err = lobby.NewService(lrepo, llog, c.Lobby)
+		lserv, err = lobby.NewService(lrepo, c.Lobby)
 		if err != nil {
 			main.Danger("an error occurred with creating the lobby service: %v", err)
 		}
+
+		lserv.SetLogger(llog)
 	}
 
 	// client service init
@@ -113,10 +127,12 @@ func main() {
 		crepo := plain.NewClientRepository()
 
 		var err error
-		cserv, err = client.NewService(crepo, clog)
+		cserv, err = client.NewService(crepo)
 		if err != nil {
 			main.Danger("an error occurred with creating the client service: %v", err)
 		}
+
+		cserv.SetLogger(clog)
 	}
 
 	// websocket route init

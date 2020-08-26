@@ -1,165 +1,27 @@
 package game
 
+// this file is concerned with game-logic
 import (
 	"encoding/json"
 	"fmt"
-	"io"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/fatih/color"
 	"github.com/toms1441/resistance-server/internal/conn"
 	"github.com/toms1441/resistance-server/internal/game"
-	"github.com/toms1441/resistance-server/internal/lobby"
 	"github.com/toms1441/resistance-server/internal/logger"
 )
 
 type TestGame struct {
 	Type    game.Type      `json:"type"`
+	Rounds  [5]game.Round  `json:"rounds"`
 	Players map[string]int `json:"players"`
 	Option  game.Option    `json:"option"`
 }
 
 var singlegame *game.Game
-
-func TestNewGame(t *testing.T) {
-
-	testGameLoop(0, 9, func(g *game.Game, err error, gtype game.Type, goption game.Option, i int) {
-		if i >= 5 {
-			if err != nil {
-				t.Fatalf("game.NewGame: %v", err)
-			}
-		} else if i < 5 {
-			if err != game.ErrInvalidClients {
-				t.Fatalf("game.NewGame.(error) == nil, when it should give an error")
-			}
-		}
-	})
-
-}
-
-func TestGameSetLogger(t *testing.T) {
-	done := make(chan bool)
-
-	reader, writer := io.Pipe()
-
-	lc := logger.DefaultConfig
-	lc.Writer = writer
-
-	mapconn := map[string]conn.Conn{}
-	for _, v := range cn[:5] {
-		mapconn[v.GetClient().ID] = v
-	}
-
-	go func() {
-		bytes := make([]byte, 1024)
-		for {
-			n, err := reader.Read(bytes)
-			if n == 0 {
-				continue
-			}
-
-			if err != nil {
-				fmt.Printf("%v", err)
-				continue
-			}
-
-			done <- true
-		}
-	}()
-
-	var err error
-
-	singlegame, err = game.NewGame(mapconn, game.TypeBasic.Common(), 0)
-	if err != nil {
-		t.Fatalf("game.NewGame: %v", err)
-	}
-
-	singlegame.SetLogger(logger.NewLogger(lc))
-
-	select {
-	case <-done:
-	case <-time.After(time.Millisecond * 100):
-		t.Fatalf("timed out")
-	}
-
-	singlegame.SetLogger(logger.NullLogger())
-
-}
-
-func TestGameBroadcast(t *testing.T) {
-
-	index := len(singlegame.Players)
-
-	msgsent := 0
-	done := make(chan bool)
-	retfunc := func(log logger.Logger, bytes []byte) error {
-
-		msgsent++
-		if msgsent == 5 {
-			done <- true
-		}
-
-		return nil
-	}
-
-	for i := 0; i < index; i++ {
-		sn[i].AddCommand("test", conn.MessageStruct{
-			"null": retfunc,
-		})
-	}
-
-	singlegame.Broadcast(conn.MessageSend{
-		Group: "test",
-		Name:  "null",
-	})
-
-	select {
-	case <-done:
-	case <-time.After(time.Millisecond * 100):
-		t.Fatalf("timed out")
-	}
-
-	for i := 0; i < index; i++ {
-		sn[i].RemoveCommandsByGroup("test")
-	}
-
-}
-
-func TestGameJSON(t *testing.T) {
-	testGameLoop(5, 10, func(g *game.Game, err error, gtype game.Type, goption game.Option, index int) {
-		marshal, err := json.Marshal(g)
-		if err != nil {
-			t.Fatalf("json.Marshal: %v", err)
-		}
-
-		unmarshal := &TestGame{}
-		err = json.Unmarshal(marshal, unmarshal)
-		if err != nil {
-			t.Fatalf("json.Unmarshal: %v", err)
-		}
-	})
-}
-
-func TestGameMessageSend(t *testing.T) {
-	testGameLoop(5, 10, func(g *game.Game, err error, gtype game.Type, goption game.Option, index int) {
-		ms := conn.MessageSend{
-			Group: "game",
-			Name:  "get",
-			Body:  g,
-		}
-
-		marshal, err := json.Marshal(ms)
-		if err != nil {
-			t.Fatalf("json.Marshal: %v", err)
-		}
-
-		thisgame := &TestGame{}
-		err = json.Unmarshal(marshal, thisgame)
-		if err != nil {
-			t.Fatalf("json.Unmarshal: %v", err)
-		}
-	})
-}
 
 func TestGameSend(t *testing.T) {
 	validateplayerhave := func(ps map[string]int) (vp validateplayer) {
@@ -239,7 +101,8 @@ func TestGameSend(t *testing.T) {
 		return vp
 	}
 
-	testGameLoop(5, 9, func(g *game.Game, err error, gtype game.Type, goption game.Option, index int) {
+	testGameLoop(5, 9, func(g *game.Game, gtype game.Type, goption game.Option, index int) {
+		var mtx sync.Mutex
 		num := 0
 		done := make(chan int)
 
@@ -296,11 +159,13 @@ func TestGameSend(t *testing.T) {
 						}
 						//t.Logf("%v %v", vp.wantspy, vp.wantspy)
 						//t.Logf("%+v", vp)
-						t.Logf("%d", p.Type)
+						//t.Logf("%d", p.Type)
 					}
 
+					mtx.Lock()
+					defer mtx.Unlock()
 					num++
-					// we ran this function for all players with no error
+					// if all players finished
 					if num == len(g.Players) {
 						done <- index
 					}
@@ -314,7 +179,137 @@ func TestGameSend(t *testing.T) {
 		g.Send()
 
 		<-done
-		t.Logf("finished game: type: %s, option: %d", lobby.Type(gtype.Common()).String(), goption)
+		//t.Logf("finished game: type: %s, option: %d", lobby.Type(gtype.Common()).String(), goption)
 	})
 
+}
+
+// boy is this test going to be long
+func TestGameRun(t *testing.T) {
+
+	// index 0 will decline any mission, in-order to test round failure
+	// index 1 will recruit a spy on each mission and fail every mission
+	// index 2 will recruit an all resistance team on each mission and try to fail every mission
+	// index 3 will recruit randomly, even if it's a spy. if one of the player is a spy, that spy will fail the round.
+	dolog := false // set this to true if you're debugging
+
+	lc := logger.DefaultConfig
+	lc.SWidth = 0
+	lc.PWidth = 10
+	// cause yeah
+	lc.PAttr = color.New(color.Bold)
+	lc.Debug = true
+
+	for k, v := range cn {
+		newlc := lc
+		newlc.Prefix = fmt.Sprintf("client %02d", k+1)
+		if dolog {
+			v.SetLogger(logger.NewLogger(newlc))
+		}
+	}
+
+	results := map[int]game.Status{
+		0: game.StatusLost,
+		1: game.StatusLost,
+		2: game.StatusWon,
+	}
+
+	for index := 0; index <= 2; index++ {
+		index := index
+		/*
+			if index == 1 || index == 2 {
+				dolog = true
+			} else {
+				dolog = false
+			}
+		*/
+
+		var done = make(chan game.Status)
+
+		log := logger.NullLogger()
+		if dolog {
+			lc.Prefix = fmt.Sprintf("game %02d", index+1)
+			log = logger.NewLogger(lc)
+		}
+
+		go testGameLoop(5, 5, func(g *game.Game, gtype game.Type, goption game.Option, gi int) {
+			if goption != 0 || gtype != game.TypeBasic {
+				return
+			}
+
+			g.SetLogger(log)
+
+			players := []int{}
+
+			for i := 0; i < len(cn); i++ {
+				cl := cn[i].GetClient()
+				playerid := cl.ID
+
+				vsn := sn[i]
+
+				player, ok := g.Players[playerid]
+				if !ok {
+					continue
+				}
+
+				testgame := &TestGame{}
+
+				players = append(players, i)
+
+				lp := &loopParameter{
+					g:       g,
+					gtype:   gtype,
+					goption: goption,
+					gi:      gi,
+
+					testgame: testgame,
+					rounds:   []game.Round{},
+					players:  &players,
+					vsn:      vsn,
+					player:   player,
+					index:    index,
+				}
+
+				vsn.AddCommand("game", conn.MessageStruct{
+					// this command is sent whenever a mission has started
+					// now by started I mean a new start of a round or a failure of a previous mission.
+					// in this case body is basically an id.
+					// we have to do the ID matching manually.
+					"choose": getChooseFunc(lp),
+					// vote is sent to all players, it basically sends an array of user IDs as body.
+					// we expect each player to respond to vote with a true or false
+					"vote": getVoteFunc(lp),
+					// decide is sent whenever a mission has been accepted.
+					// basically whenever a mission have been accepted, the mission assignees(players that are in the mission) get to decide if the mission fails or succeeds
+					// if the player is a spy(morgana is also a spy), their vote is accounted for.
+					// else the vote succeeds
+					"decide": getDecideFunc(lp),
+
+					"round": getRoundFunc(lp),
+
+					"get": func(log logger.Logger, body []byte) error {
+						json.Unmarshal(body, testgame)
+						return nil
+					},
+				})
+
+				// when the game finishes remove all the commands defined above
+				defer vsn.RemoveCommandsByGroup("game")
+			}
+
+			g.Run(done)
+		})
+
+		select {
+		case have := <-done:
+			t.Logf("game[%d].Status %s\n", index, have.String())
+			want := results[index]
+			if have != want {
+				t.Fatalf("want: '%s', have: '%s'", want.String(), have.String())
+			}
+		case <-time.After(time.Second * 2):
+			t.Fatal("timed out")
+			break
+		}
+	}
 }

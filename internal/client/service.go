@@ -20,6 +20,8 @@ type Service interface {
 	UpdateClient(id string, client Client) error
 	// RemoveClient deletes a client from the repo
 	RemoveClient(id string) error
+	// SetLogger sets the logger for this service instance
+	SetLogger(log logger.Logger)
 }
 
 type service struct {
@@ -28,16 +30,13 @@ type service struct {
 }
 
 // NewService returns a new user service. It can be used to create, read, update and delete.
-func NewService(repo Repository, log logger.Logger) (Service, error) {
+func NewService(repo Repository) (Service, error) {
 	if !repo.IsValid() {
 		return nil, fmt.Errorf("!repo.IsValid()")
 	}
 
-	log.Info("Initiated service")
-
 	return &service{
 		repo: repo,
-		log:  log,
 	}, nil
 }
 
@@ -97,4 +96,11 @@ func (s *service) RemoveClient(id string) error {
 
 	s.log.Debug("s.RemoveClient: %s", id)
 	return nil
+}
+
+func (s *service) SetLogger(log logger.Logger) {
+	if log != nil {
+		s.log = log
+		log.Info("Set Logger")
+	}
 }

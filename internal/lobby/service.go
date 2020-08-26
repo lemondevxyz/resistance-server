@@ -92,7 +92,10 @@ func NewService(repo Repository, config Config) (Service, error) {
 
 // SetLogger sets the logger for the service
 func (s *service) SetLogger(log logger.Logger) {
-	s.log = log
+	if s.log != nil {
+		s.log = log
+		log.Info("Set Logger")
+	}
 }
 
 // CreateLobby creates a new lobby.
@@ -129,7 +132,8 @@ func (s *service) CreateLobby(l *Lobby) error {
 	}
 
 	log := s.log.Replicate()
-	space := logger.Space - len(l.Type.String()) - len(l.ID)
+	space := logger.DefaultConfig.SWidth - len(l.Type.String()) - len(l.ID)
+
 	suffix := l.Type.String() + strings.Repeat(" ", space) + l.ID
 	log.SetSuffix(suffix)
 

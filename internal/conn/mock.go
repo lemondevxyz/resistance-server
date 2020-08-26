@@ -22,8 +22,9 @@ type mock struct {
 }
 
 func (m *mock) MarshalJSON() ([]byte, error) {
-	m.mtx.Lock()
 	defer m.mtx.Unlock()
+	m.mtx.Lock()
+
 	return json.Marshal(struct{}{})
 }
 
@@ -66,7 +67,7 @@ func NewMockConn(cn net.Conn, cl client.Client) Conn {
 			}
 
 			if err != nil {
-				fmt.Println("destroyed conn from read")
+				//fmt.Println("destroyed conn from read")
 				m.Destroy()
 			}
 
@@ -86,16 +87,19 @@ func NewMockConn(cn net.Conn, cl client.Client) Conn {
 					if len(messagejson.Name) > 0 {
 						callback, ok := strct[messagejson.Name]
 						if ok {
-							err = callback(m.log, messagejson.Body)
-							if err != nil {
-								fullname := fmt.Sprintf("%s.%s", messagejson.Group, messagejson.Name)
-								m.log.Debug("c.MessageRecv: %s %v", fullname, err)
-							}
+							go func() {
+								err = callback(m.log, messagejson.Body)
+								if err != nil {
+									fullname := fmt.Sprintf("%s.%s", messagejson.Group, messagejson.Name)
+									m.log.Debug("c.MessageRecv: %s %v", fullname, err)
+								}
+							}()
 						}
 					}
 				} else {
-					m.log.Warn("!c.cmd.(bool): %+v", strct)
+					m.log.Warn("!c.cmd.(bool): %s.%s", messagejson.Group, messagejson.Name)
 				}
+
 				m.mtx.Unlock()
 			}
 
@@ -109,7 +113,6 @@ func NewMockConn(cn net.Conn, cl client.Client) Conn {
 func (m *mock) AddCommand(group string, msgstrct MessageStruct) {
 	defer m.mtx.Unlock()
 	m.mtx.Lock()
-
 	cmd, ok := m.cmd[group]
 	// if group exists
 	if ok {
@@ -121,11 +124,12 @@ func (m *mock) AddCommand(group string, msgstrct MessageStruct) {
 	} else {
 		m.cmd[group] = msgstrct
 	}
+
 }
 
 func (m *mock) ExecuteCommand(group, name string, body []byte) error {
-	m.mtx.Lock()
 	defer m.mtx.Unlock()
+	m.mtx.Lock()
 	g, ok := m.cmd[group]
 	if ok {
 		cmd, ok := g[name]
@@ -141,19 +145,20 @@ func (m *mock) ExecuteCommand(group, name string, body []byte) error {
 }
 
 func (m *mock) RemoveCommandsByGroup(group string) {
-	defer m.mtx.Unlock()
 	m.mtx.Lock()
 	delete(m.cmd, group)
+	m.mtx.Unlock()
 	m.log.Debug("conn.RemoveCommandsByGroup: %s", group)
 }
 
 func (m *mock) RemoveCommandsByNames(group string, names ...string) {
+	m.mtx.Lock()
 	_, ok := m.cmd[group]
+	defer m.mtx.Unlock()
 	if ok {
-		defer m.mtx.Unlock()
-		m.mtx.Lock()
 		for _, v := range names {
 			delete(m.cmd[group], v)
+			m.log.Debug("conn.RemoveCommandsByNames: %s.%s", group, v)
 		}
 	}
 }
@@ -189,12 +194,14 @@ func (m *mock) GetDone() chan bool {
 
 func (m *mock) Destroy() {
 
+	defer m.mtx.Unlock()
 	m.mtx.Lock()
+
 	for _, v := range m.done {
 		v <- true
 	}
+
 	m.pipe.Close()
-	m.mtx.Unlock()
 }
 
 func (m *mock) GetClient() (c client.Client) {

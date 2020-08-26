@@ -118,7 +118,7 @@ func (c context) addCommands() {
 
 			// goroutine to indicate any update in the amount of players
 			// in-case there is, we update every client.
-			insert, remove := l.Subscribe()
+			insert, remove := l.SubscribeInsert(), l.SubscribeRemove()
 			go func(cserv client.Service, lserv lobby.Service, l *lobby.Lobby) {
 				for {
 					select {

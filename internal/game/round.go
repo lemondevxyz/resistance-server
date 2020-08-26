@@ -111,12 +111,17 @@ var RoundDefaults = map[int][5]Round{
 	// this is used for 9 players and 10 players aswell
 }
 
-// Won is a method that returns a boolean value if the resistance
+// GetConculsion is a method that returns a boolean value if the resistance
 func (r Round) GetConculsion() Status {
 
 	var missionDeclined int
 	// loop over the missions in-order to determine if the spies won
 	// if all the missions(5) have been declined then the spies won
+
+	if r.Missions[0].IsEmpty() {
+		return StatusDefault
+	}
+
 	for _, v := range r.Missions {
 		// if the mission has been occupied by assignees
 		if !v.IsEmpty() {
@@ -137,7 +142,6 @@ func (r Round) GetConculsion() Status {
 		return StatusWon
 	}
 
-	return StatusDefault
 }
 
 // b = if mi == 5
@@ -146,7 +150,7 @@ func (g *Game) runRound(ri int) (b bool) {
 	for ; mi < 5; mi++ {
 		// if a mission has been successful then break the loop
 		success := g.runMission(ri, mi)
-		g.log.Debug("g.runMission(%d, %d): %v", ri, mi, success)
+		g.log.Debug("end of g.runMission(%d, %d): %t", ri, mi, success)
 		if success {
 			break
 		}
@@ -154,7 +158,7 @@ func (g *Game) runRound(ri int) (b bool) {
 	g.log.Debug("g.runMission(%d)", ri)
 
 	if mi == 5 {
-		g.log.Debug("mi == 5", ri)
+		g.log.Debug("mi == 5")
 		return true
 	}
 
@@ -171,6 +175,11 @@ func (g *Game) runRound(ri int) (b bool) {
 
 		assignees = append(assignees, fmt.Sprintf("@%s#%s", p.GetClient().Username, p.GetClient().Discriminator))
 	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*30)
+
+	g.startDecidingPhase(cancel, ri, mi)
+
 	g.log.Debug("assignees = %v", assignees)
 
 	g.Broadcast(conn.MessageSend{
@@ -179,12 +188,12 @@ func (g *Game) runRound(ri int) (b bool) {
 		Body:  g.Rounds[ri].Missions[mi].Assignees,
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*30)
-	g.startDecidingPhase(cancel, ri, mi)
 	<-ctx.Done()
 	// after it's done
 	// send the round result
+	g.mtx.Lock()
 	g.Rounds[ri].Failure = uint8(len(g.Rounds[ri].failure))
+	g.mtx.Unlock()
 
 	g.Broadcast(conn.MessageSend{
 		Group: "game",
@@ -193,6 +202,24 @@ func (g *Game) runRound(ri int) (b bool) {
 	})
 
 	g.log.Debug("g.Rounds[%d].GetConculsion: %v", ri, g.Rounds[ri].GetConculsion())
+
+	spies := 0
+	resistance := 0
+
+	for _, v := range g.Rounds {
+		status := v.GetConculsion()
+
+		if status == StatusWon {
+			resistance++
+		} else if status == StatusLost {
+			spies++
+		}
+	}
+
+	// gg
+	if spies == 3 || resistance == 3 {
+		return true
+	}
 
 	return false
 }
@@ -210,8 +237,10 @@ func (g *Game) startDecidingPhase(cancel context.CancelFunc, ri int, mi int) err
 			}
 		}
 
-		p.Conn.AddCommand("game", conn.MessageStruct{
+		p.AddCommand("game", conn.MessageStruct{
 			"decide": func(log logger.Logger, bytes []byte) error {
+				defer p.RemoveCommandsByNames("game", "decide")
+				// in-case we got multiple executions at once
 
 				// automatically make the round successful
 				success := true
@@ -224,6 +253,7 @@ func (g *Game) startDecidingPhase(cancel context.CancelFunc, ri int, mi int) err
 					}
 				}
 
+				g.mtx.Lock()
 				if !success {
 					g.Rounds[ri].failure = append(g.Rounds[ri].failure, p.GetClient().ID)
 				} else {
@@ -231,8 +261,10 @@ func (g *Game) startDecidingPhase(cancel context.CancelFunc, ri int, mi int) err
 				}
 
 				round := g.Rounds[ri]
-				want := len(round.success) + len(round.failure)
-				have := int(round.Assignees)
+				g.mtx.Unlock()
+				want := int(round.Assignees)
+				have := len(round.success) + len(round.failure)
+
 				if have != want {
 					return fmt.Errorf("want: %d, have: %d", want, have)
 				}

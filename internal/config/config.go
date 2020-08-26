@@ -36,7 +36,7 @@ func NewConfig() (c Config, err error) {
 			os.Create("config.yaml")
 			viper.WriteConfig()
 		} else {
-			return c, fmt.Errorf("viper.ReadInConfig", err)
+			return c, fmt.Errorf("viper.ReadInConfig: %w", err)
 		}
 	}
 

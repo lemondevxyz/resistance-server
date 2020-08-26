@@ -30,31 +30,29 @@ func (m Mission) IsEmpty() bool {
 
 func (g *Game) runMission(ri, mi int) (b bool) {
 
-	g.log.Debug("g.runMission(%d, %d):", ri, mi)
+	g.log.Debug("start of runMission(%d, %d)", ri, mi)
 
 	// if the captain is invalid then set a new captain
-	captain, ok := g.Players[g.captain]
-	if !ok {
+	if len(g.captain) == 0 {
+		g.SetCaptain()
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute*1)
+	g.startChoosingPhase(cancel, ri, mi)
+
+	captain := g.Players[g.captain]
+	g.log.Debug("captain = @%s#%s", captain.GetClient().Username, captain.GetClient().Discriminator)
+
+	// inform the players that we're in the choosing phase
+	// and give em the captain's ID
 	g.Broadcast(conn.MessageSend{
 		Group: "game",
 		Name:  "choose",
 		Body:  g.captain,
 	})
 
-	g.log.Debug("captain = @%s#%s", captain.GetClient().Username, captain.GetClient().Discriminator)
-
-	g.Broadcast(conn.MessageSend{
-		Group: "game",
-		Name:  "votemax",
-		Body:  g.Rounds[ri].Assignees,
-	})
-
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute*1)
-	g.startChoosingPhase(cancel, ri, mi)
 	<-ctx.Done()
-	captain.RemoveCommandsByGroup("game")
+	captain.RemoveCommandsByNames("game", "choose")
 
 	// names of the assignees
 	assignees := []string{}
@@ -69,6 +67,9 @@ func (g *Game) runMission(ri, mi int) (b bool) {
 		assignees = append(assignees, fmt.Sprintf("@%s#%s", p.GetClient().Username, p.GetClient().Discriminator))
 	}
 
+	ctx, cancel = context.WithTimeout(context.Background(), time.Minute*3)
+	g.startVotingPhase(cancel, ri, mi)
+
 	g.log.Debug("assignees = %v", assignees)
 
 	g.Broadcast(conn.MessageSend{
@@ -77,13 +78,10 @@ func (g *Game) runMission(ri, mi int) (b bool) {
 		Body:  g.Rounds[ri].Missions[mi].Assignees,
 	})
 
-	ctx, cancel = context.WithTimeout(context.Background(), time.Minute*3)
-
-	g.startVotingPhase(cancel, ri, mi)
 	<-ctx.Done()
 	for _, v := range g.Players {
 		if v.IsValid() {
-			v.Conn.RemoveCommandsByGroup("game")
+			v.RemoveCommandsByNames("game", "vote")
 		}
 	}
 
@@ -92,9 +90,11 @@ func (g *Game) runMission(ri, mi int) (b bool) {
 	g.log.Debug("missions[%d].IsAccepted: %t", mi, msh.IsAccepted())
 	if msh.IsAccepted() {
 		// If the mission was accepted by players
-		// return true as to proceed to roundVote
+		// return true as to proceed to round decision
 		b = true
 	} else {
+		// else just set a new captain and return false
+		// this means that we get another mission in this round
 		g.SetCaptain()
 	}
 
@@ -107,7 +107,7 @@ func (g *Game) startChoosingPhase(cancel context.CancelFunc, ri, mi int) {
 	// We don't need to validate because we already validated above
 	captain, ok := g.Players[g.captain]
 	if ok {
-		captain.Conn.AddCommand("game", conn.MessageStruct{
+		captain.AddCommand("game", conn.MessageStruct{
 			"choose": func(log logger.Logger, body []byte) error {
 				var arr = []string{}
 
@@ -123,18 +123,27 @@ func (g *Game) startChoosingPhase(cancel context.CancelFunc, ri, mi int) {
 					return fmt.Errorf("%w - want: %d, have: %d", ErrMinAssignees, want, have)
 				}
 
-				var ids []string
+				ids := []string{}
+				exists := map[string]bool{}
+
 				for _, v := range arr {
 					_, ok := g.Players[v]
 					if ok {
 						// else assign the real player to the array
+						if exists[v] == true {
+							return fmt.Errorf("player id: %s is duplicated", v)
+						}
+
 						ids = append(ids, v)
+						exists[v] = true
 					} else {
 						return ErrInvalidPlayer
 					}
 				}
 
+				g.mtx.Lock()
 				g.Rounds[ri].Missions[mi].Assignees = ids
+				g.mtx.Unlock()
 
 				cancel()
 
@@ -146,10 +155,13 @@ func (g *Game) startChoosingPhase(cancel context.CancelFunc, ri, mi int) {
 
 // startVotingPhase is called whenever the mission assignees have been set. It sets a command 'game.vote' to get all players' votes
 func (g *Game) startVotingPhase(cancel context.CancelFunc, ri, mi int) {
+
 	for _, v := range g.Players {
 		if v.IsValid() {
-			v.Conn.AddCommand("game", conn.MessageStruct{
+			v.AddCommand("game", conn.MessageStruct{
 				"vote": func(log logger.Logger, bytes []byte) error {
+					// for when we have multiple commands executing at once
+
 					var accept bool
 
 					err := json.Unmarshal(bytes, &accept)
@@ -157,6 +169,7 @@ func (g *Game) startVotingPhase(cancel context.CancelFunc, ri, mi int) {
 						return fmt.Errorf("json.Unmarshal: %w", err)
 					}
 
+					g.mtx.Lock()
 					if accept {
 						g.Rounds[ri].Missions[mi].Accept = append(g.Rounds[ri].Missions[mi].Accept, v.GetClient().ID)
 					} else {
@@ -164,9 +177,14 @@ func (g *Game) startVotingPhase(cancel context.CancelFunc, ri, mi int) {
 					}
 
 					mission := g.Rounds[ri].Missions[mi]
+					g.mtx.Unlock()
+
 					want := len(mission.Accept) + len(mission.Decline)
 					have := len(g.Players)
 
+					// ensure there aren't any duplicates
+					// once we're close to return just remove the handler
+					//fmt.Println(v.GetClient().ID)
 					if want != have {
 						return fmt.Errorf("want: %d, have: %d", want, have)
 					}

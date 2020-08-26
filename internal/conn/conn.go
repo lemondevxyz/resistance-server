@@ -76,7 +76,7 @@ func (s *sendChannel) isclosed() bool {
 
 var connsmtx sync.Mutex
 
-// repository cannot marshal and have access to functions.
+// repository cannot type interface and have access to functions.
 var conns = map[string]Conn{}
 
 func AllConn() map[string]Conn {

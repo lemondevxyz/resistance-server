@@ -34,8 +34,9 @@ type Logger interface {
 }
 
 type log struct {
-	config Config
-	colors map[logtype]*color.Color
+	config       Config
+	colors       map[logtype]*color.Color
+	logtypewidth int
 }
 
 const (
@@ -56,18 +57,19 @@ func NewLogger(config Config) Logger {
 		colors[k] = color.New(v)
 	}
 
-	if len(config.Prefix) > 0 {
-		if config.PAttr != nil {
-			config.Prefix = config.PAttr.Sprintf("%s\t", config.Prefix)
-		}
-	}
-
 	instance := &log{
 		config: config,
 		colors: colors,
 	}
 
+	instance.SetPrefix(config.Prefix)
 	instance.SetSuffix(config.Suffix)
+
+	for _, v := range config.LogFormat {
+		if len(v) > instance.logtypewidth {
+			instance.logtypewidth = len(v)
+		}
+	}
 
 	return instance
 }
@@ -80,27 +82,32 @@ func NullLogger() Logger {
 
 func (l *log) logtypestr(lt logtype) string {
 	str := l.config.LogFormat[lt]
-	return l.colors[lt].Sprint(str)
+	return l.colors[lt].Sprint(l.calc(str, l.logtypewidth))
+}
+
+func (l *log) calc(str string, space int) string {
+	size := space - len(str)
+	if len(str) > space {
+		if space > 0 {
+			str = str[:space-4] + "..."
+		}
+	} else if size >= 0 {
+		str = str + strings.Repeat(" ", size)
+	}
+
+	return str
 }
 
 func (l *log) SetPrefix(str string) {
-	l.config.Prefix = str + "\t"
+	l.config.Prefix = l.calc(str, l.config.PWidth)
 }
 
 func (l *log) GetPrefix() string {
 	return l.config.Prefix
 }
 
-const Space = 20
-
 func (l *log) SetSuffix(str string) {
-	size := Space - len(str)
-	str = strings.Repeat(" ", size) + str
-	if len(str) > Space {
-		str = str[:16] + "..."
-	}
-
-	l.config.Suffix = str
+	l.config.Suffix = l.calc(str, l.config.SWidth)
 }
 
 func (l *log) GetSuffix() string {
@@ -108,7 +115,7 @@ func (l *log) GetSuffix() string {
 }
 
 func (l *log) log(typestr logtype, format string, values ...interface{}) {
-	//logdatestr := time.Now().Format(l.config.Layout)
+
 	str := fmt.Sprintf("%s %s", l.logtypestr(typestr), format)
 	if len(l.config.Suffix) > 0 {
 		str = fmt.Sprintf("%s %s %s", l.logtypestr(typestr), l.config.SAttr.Sprint(l.config.Suffix), format)

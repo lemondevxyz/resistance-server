@@ -159,10 +159,12 @@ func TestAddCommand(t *testing.T) {
 func TestExecuteCommand(t *testing.T) {
 
 	go func(t *testing.T) {
-		err := iconn.ExecuteCommand("test", "null", nil)
-		if err != nil {
-			t.Fatalf("iconn.ExecuteCommand: %v", err)
-		}
+		iconn.ExecuteCommand("test", "null", nil)
+		/*
+			if err != nil {
+				t.Fatalf("iconn.ExecuteCommand: %v", err)
+			}
+		*/
 	}(t)
 
 	val := <-connresp

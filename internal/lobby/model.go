@@ -21,7 +21,7 @@ type Lobby struct {
 	conns   map[string]conn.Conn
 
 	// lobby owner
-	owner string `json:"owner"`
+	owner string
 
 	insert []chan conn.Conn
 	remove []chan conn.Conn
@@ -134,7 +134,10 @@ func (l *Lobby) Equal(l2 *Lobby) bool {
 // SetLogger sets the logger for the lobby.
 // Used with lobby.service to provide better logs.
 func (l *Lobby) SetLogger(log logger.Logger) {
-	l.log = log
+	if log != nil {
+		l.log = log
+		l.log.Info("Set Logger")
+	}
 }
 
 // Join inserts a client into the lobby, and updates the rest of the clients.

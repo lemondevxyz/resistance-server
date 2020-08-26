@@ -28,6 +28,10 @@ type Config struct {
 	Debug bool
 	// Writer is the standard io.Writer
 	Writer io.Writer
+	// PWidth is the minimum prefix width
+	PWidth int
+	// SWidth is the minimum suffix width
+	SWidth int
 }
 
 var DefaultConfig = Config{
@@ -37,11 +41,11 @@ var DefaultConfig = Config{
 	SAttr:  color.New(),
 	Layout: "15:04:05.000",
 	LogFormat: map[logtype]string{
-		debug:  "DEBUG\t",
-		info:   "INFO\t",
-		warn:   "WARNING\t",
-		danger: "DANGER\t",
-		fatal:  "FATAL\t",
+		debug:  "DEBUG",
+		info:   "INFO",
+		warn:   "WARNING",
+		danger: "DANGER",
+		fatal:  "FATAL",
 	},
 	LogColor: map[logtype]color.Attribute{
 		debug:  color.FgMagenta,
@@ -51,4 +55,6 @@ var DefaultConfig = Config{
 		fatal:  color.FgHiRed,
 	},
 	Writer: os.Stdout,
+	PWidth: 8,
+	SWidth: 20,
 }

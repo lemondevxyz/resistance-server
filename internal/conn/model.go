@@ -37,7 +37,7 @@ type Conn interface {
 type MessageStruct map[string]MessageCallback
 
 // MessageCallback is used whenever a command gets called it has a name field, if the name field exists in Conn.CMD MessageCallback gets executed.
-type MessageCallback func(log logger.Logger, bytes []byte) error
+type MessageCallback func(log logger.Logger, body []byte) error
 
 // MessageRecv is the struct we use whenever the client has sent a message.
 type MessageRecv struct {
